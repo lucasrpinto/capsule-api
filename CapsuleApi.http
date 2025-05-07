@@ -1,0 +1,6 @@
+@CapsuleApi_HostAddress = http://localhost:5230
+
+GET {{CapsuleApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
