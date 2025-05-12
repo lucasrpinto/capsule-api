@@ -1,6 +1,7 @@
 ﻿using CapsuleApi.src.Data;
 using CapsuleApi.src.Models;
 using CapsuleApi.src.Models.DTOs;
+using CapsuleApi.src.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -16,11 +17,15 @@ public class CapsuleController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IWebHostEnvironment _env;
+    private readonly AuthService _authService;
+    private readonly FileStorageService _fileStorage;
 
-    public CapsuleController(AppDbContext context, IWebHostEnvironment env)
+    public CapsuleController(AppDbContext context, IWebHostEnvironment env, AuthService authService, FileStorageService fileStorage)
     {
         _context = context; 
         _env = env;
+        _authService = authService;
+        _fileStorage = fileStorage;
     }
 
     [HttpPost]
@@ -56,36 +61,26 @@ public class CapsuleController : ControllerBase
 
         _context.Capsules.Add(capsule);
 
-        if(plan == "Premium" && request.Files != null)
+        if (plan == "Premium" && request.Files != null)
         {
             var fileList = new List<CapsuleFile>();
-            var uploadFolder = Path.Combine(_env.WebRootPath ?? "wwwroot", "updloads");
 
-            if(!Directory.Exists(uploadFolder))
-                Directory.CreateDirectory(uploadFolder);
-
-            foreach(var file in request.Files)
+            foreach (var file in request.Files)
             {
-                var fileName = $"{Guid.NewGuid()}_{file.FileName}";
-                var filePath = Path.Combine(uploadFolder, fileName);
-
-                using (var stream = new FileStream(filePath, FileMode.Create))
-                {
-                    await file.CopyToAsync(stream);
-                }
+                var fileUrl = await _fileStorage.UploadFileAsync(file, "capsules");
 
                 fileList.Add(new CapsuleFile
                 {
-                    Id= Guid.NewGuid(),
+                    Id = Guid.NewGuid(),
                     FileName = file.FileName,
-                    FilePath = filePath,
+                    FilePath = fileUrl,
                     FileType = file.ContentType,
                     UploadedAt = DateTime.UtcNow,
                     CapsuleId = capsule.Id
                 });
             }
 
-            _context.Files.AddRange(fileList);
+            _context.Files.AddRange(fileList); // ✅ Adiciona os arquivos ao contexto
         }
 
         await _context.SaveChangesAsync();
@@ -124,5 +119,117 @@ public class CapsuleController : ControllerBase
         });
 
         return Ok(result);
+    }
+
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> DeleteCapsule(Guid id)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId == null)
+            return Unauthorized(new { message = "Token inválido" });
+
+        var guid = Guid.Parse(userId);
+
+        var capsule = await _context.Capsules
+            .Include(c => c.Files)
+            .FirstOrDefaultAsync(c => c.Id == id && c.UserId == guid);
+
+        if (capsule == null)
+            return NotFound(new { message = "Cápusla não encontrada."});
+
+        foreach (var file in capsule.Files)
+        {
+            if (System.IO.File.Exists(file.FilePath))
+                System.IO.File.Delete(file.FilePath);
+        }
+
+        _context.Capsules.Remove(capsule);
+        await _context.SaveChangesAsync();
+
+        return Ok(new { message = "Cápusla deletada com sucesso."});
+    }
+
+    [HttpPut]
+    [Route("users")]
+    public async Task<IActionResult> UpdateUser([FromForm] UpdateUserRequest request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId == null)
+            return Unauthorized(new { message = "Token inválido" });
+
+        var user = await _context.Users.FindAsync(Guid.Parse(userId));
+        if (user == null)
+            return NotFound(new { message = "Usuário não encontrado" });
+
+        if (!string.IsNullOrWhiteSpace(request.FirstName))
+            user.FirstName = request.FirstName;
+
+        if (!string.IsNullOrWhiteSpace(request.LastName))
+            user.LastName = request.LastName;
+
+        // E-mail: só altera se ambos forem preenchidos e iguais
+        if (!string.IsNullOrWhiteSpace(request.Email) &&
+            !string.IsNullOrWhiteSpace(request.ConfirmEmail) &&
+            request.Email == request.ConfirmEmail)
+        {
+            var existingEmail = await _context.Users
+                .AnyAsync(u => u.Email == request.Email && u.Id != user.Id);
+
+            if (existingEmail)
+                return BadRequest(new { message = "Este e-mail já está cadastrado." });
+
+            user.Email = request.Email;
+        }
+
+        // Senha: só altera se ambas forem preenchidas e iguais
+        if (!string.IsNullOrWhiteSpace(request.Password) &&
+            !string.IsNullOrWhiteSpace(request.ConfirmPassword) &&
+            request.Password == request.ConfirmPassword)
+        {
+            user.PasswordHash = _authService.HashPassword(request.Password);
+        }
+
+
+        if (request.ProfileImage != null)
+        {
+            var uploadFolder = Path.Combine(_env.WebRootPath ?? "wwwroot", "profile-images");
+            if (!Directory.Exists(uploadFolder))
+                Directory.CreateDirectory(uploadFolder);
+
+            var fileName = $"{Guid.NewGuid()}_{request.ProfileImage.FileName}";
+            var filePath = Path.Combine(uploadFolder, fileName);
+
+            using (var stream = new FileStream(filePath, FileMode.Create))
+            {
+                await request.ProfileImage.CopyToAsync(stream);
+            }
+
+            user.ProfileImagePath = $"/profile-images/{fileName}";
+        }
+
+        await _context.SaveChangesAsync();
+        return Ok(new { message = "Dados atualizados com sucesso." });
+    }
+
+    [HttpGet]
+    [Route("users/profile")]
+    public async Task<IActionResult> GetProfile()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId == null)
+            return Unauthorized(new { message = "Token inválido." });
+
+        var user = await _context.Users.FindAsync(Guid.Parse(userId));
+        if (user == null)
+            return NotFound(new { message = "Usuário não encontrado." });
+
+        return Ok(new
+        {
+            firstName = user.FirstName,
+            lastName = user.LastName,
+            email = user.Email,
+            plan = user.Plan,
+            profileImageUrl = user.ProfileImagePath // ex: "/profile-images/foto.png"
+        });
     }
 }

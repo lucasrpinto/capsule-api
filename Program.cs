@@ -16,6 +16,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // Injeta o AuthService
 builder.Services.AddScoped<AuthService>();
 
+// Registro Seviço CloudFlare
+builder.Services.AddSingleton<FileStorageService>();
+
 // Configura JWT
 var jwtSettings = builder.Configuration.GetSection("Jwt");
 var key = Encoding.UTF8.GetBytes(jwtSettings["Key"]!);
