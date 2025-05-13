@@ -1,55 +1,70 @@
-﻿// src/Services/FileStorageService.cs
-using Amazon.S3;
-using Amazon.S3.Transfer;
+﻿using Amazon.S3;
 using Amazon.S3.Model;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
+using System;
+using System.IO;
+using System.Threading.Tasks;
 
-namespace CapsuleApi.src.Services;
-
-public class FileStorageService
+namespace CapsuleApi.src.Services
 {
-    private readonly IAmazonS3 _s3Client;
-    private readonly string _bucketName;
-
-    public FileStorageService(IConfiguration config)
+    public class FileStorageService
     {
-        var settings = config.GetSection("CloudFlareR2");
-        _bucketName = settings["Bucket"];
+        private readonly IAmazonS3 _s3Client;
+        private readonly string? _bucketName;
+        private readonly string? _endpoint;
 
-        var accessKey = settings["AccessKeyId"];
-        var secretKey = settings["SecretAccessKey"];
-        var endpoint = settings["Endpoint"];
+        public string BucketName => _bucketName!;
+        public string Endpoint => _endpoint!;
 
-        // Configuração do cliente S3 com URL da Cloudflare e forçando estilo de path
-        var configS3 = new AmazonS3Config
+        public async Task DeleteFileAsync(string key)
         {
-            ServiceURL = endpoint,
-            ForcePathStyle = true,
-            SignatureVersion = "4"
-        };
+            var deleteRequest = new DeleteObjectRequest
+            {
+                BucketName = _bucketName,
+                Key = key
+            };
 
-        _s3Client = new AmazonS3Client(accessKey, secretKey, configS3);
-    }
+            await _s3Client.DeleteObjectAsync(deleteRequest);
+        }
 
-    public async Task<string> UploadFileAsync(IFormFile file, string folder)
-    {
-        var fileName = $"{folder}/{Guid.NewGuid()}_{file.FileName}";
-
-        using var stream = file.OpenReadStream();
-        stream.Position = 0; // Garante que a leitura começa do início
-
-        var putRequest = new PutObjectRequest
+        public FileStorageService(IConfiguration config)
         {
-            BucketName = _bucketName,
-            Key = fileName,
-            InputStream = stream,
-            ContentType = file.ContentType,
-            AutoCloseStream = true,
-            Headers = { ["x-amz-content-sha256"] = "UNSIGNED-PAYLOAD" }
-        };
+            var settings = config.GetSection("CloudflareR2");
+            _bucketName = settings["Bucket"];
+            _endpoint = settings["Endpoint"];
 
-        await _s3Client.PutObjectAsync(putRequest);
+            var accessKey = settings["AccessKeyId"];
+            var secretKey = settings["SecretAccessKey"];
 
-        // Retorna a URL de acesso ao arquivo
-        return $"{_s3Client.Config.ServiceURL}/{_bucketName}/{fileName}";
+            var configS3 = new AmazonS3Config
+            {
+                ServiceURL = _endpoint,
+                ForcePathStyle = true,
+                SignatureVersion = "4"
+            };
+
+            _s3Client = new AmazonS3Client(accessKey, secretKey, configS3);
+        }
+
+        public async Task<string> UploadFileAsync(IFormFile file, string folder)
+        {
+            var fileName = $"{folder}/{Guid.NewGuid()}_{file.FileName}";
+            using var stream = file.OpenReadStream();
+
+            var putRequest = new PutObjectRequest
+            {
+                BucketName = _bucketName,
+                Key = fileName,
+                InputStream = stream,
+                ContentType = file.ContentType,
+                AutoCloseStream = true,
+                DisablePayloadSigning = true
+            };
+
+            await _s3Client.PutObjectAsync(putRequest);
+
+            return $"{_endpoint}/{_bucketName}/{fileName}";
+        }
     }
 }

@@ -80,10 +80,12 @@ public class AuthService
         var user = new User
         {
             Id = Guid.NewGuid(),
+            FirstName = request.FirstName,
+            LastName = request.LastName,
             Email = request.Email,
-            PasswordHash = hashedPassword,
+            PasswordHash = HashPassword(request.Password),
             Plan = "Free",
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
         };
 
         _context.Users.Add(user);

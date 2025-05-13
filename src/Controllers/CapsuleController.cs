@@ -28,6 +28,7 @@ public class CapsuleController : ControllerBase
         _fileStorage = fileStorage;
     }
 
+    [Authorize]
     [HttpPost]
     public async Task<IActionResult> CreateCapsule([FromForm] CapsuleRequest request)
     {
@@ -37,7 +38,7 @@ public class CapsuleController : ControllerBase
         if(userId == null || plan == null) 
             return Unauthorized(new {message = "Token invalido ou ausente."});
 
-        var oneYearFromNow = DateTime.UtcNow.AddDays(1);
+        var oneYearFromNow = DateTime.UtcNow.AddYears(1);
 
         if(plan == "Free")
         {
@@ -80,7 +81,7 @@ public class CapsuleController : ControllerBase
                 });
             }
 
-            _context.Files.AddRange(fileList); // ✅ Adiciona os arquivos ao contexto
+            _context.Files.AddRange(fileList); // Adiciona os arquivos ao contexto
         }
 
         await _context.SaveChangesAsync();
@@ -114,13 +115,15 @@ public class CapsuleController : ControllerBase
             Files = c.Files.Select(f => new
             {
                 f.FileName,
-                f.FileType
+                f.FileType,
+                f.FilePath // aqui vai o link completo do R2
             })
         });
 
         return Ok(result);
     }
 
+    [Authorize]
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteCapsule(Guid id)
     {
@@ -139,8 +142,14 @@ public class CapsuleController : ControllerBase
 
         foreach (var file in capsule.Files)
         {
-            if (System.IO.File.Exists(file.FilePath))
-                System.IO.File.Delete(file.FilePath);
+            var fileUrl = file.FilePath;
+
+            if (!string.IsNullOrEmpty(fileUrl))
+            {
+                // extrai a key removendo o inicio da URL
+                var key = fileUrl.Replace($"{_fileStorage.Endpoint}/{_fileStorage.BucketName}/", "");
+                await _fileStorage.DeleteFileAsync(key);
+            }
         }
 
         _context.Capsules.Remove(capsule);
@@ -149,6 +158,7 @@ public class CapsuleController : ControllerBase
         return Ok(new { message = "Cápusla deletada com sucesso."});
     }
 
+    [Authorize]
     [HttpPut]
     [Route("users")]
     public async Task<IActionResult> UpdateUser([FromForm] UpdateUserRequest request)
@@ -192,25 +202,15 @@ public class CapsuleController : ControllerBase
 
         if (request.ProfileImage != null)
         {
-            var uploadFolder = Path.Combine(_env.WebRootPath ?? "wwwroot", "profile-images");
-            if (!Directory.Exists(uploadFolder))
-                Directory.CreateDirectory(uploadFolder);
-
-            var fileName = $"{Guid.NewGuid()}_{request.ProfileImage.FileName}";
-            var filePath = Path.Combine(uploadFolder, fileName);
-
-            using (var stream = new FileStream(filePath, FileMode.Create))
-            {
-                await request.ProfileImage.CopyToAsync(stream);
-            }
-
-            user.ProfileImagePath = $"/profile-images/{fileName}";
+            var fileUrl = await _fileStorage.UploadFileAsync(request.ProfileImage, "profiles");
+            user.ProfileImagePath = fileUrl;
         }
 
         await _context.SaveChangesAsync();
         return Ok(new { message = "Dados atualizados com sucesso." });
     }
 
+    [Authorize]
     [HttpGet]
     [Route("users/profile")]
     public async Task<IActionResult> GetProfile()
